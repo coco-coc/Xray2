@@ -2,12 +2,8 @@ name: Auto Sync Fork with Releases
 
 on:
   schedule:
-    - cron: '0 17 * * *'  # 每天 UTC 4 点自动运行
+    - cron: '0 4 * * *'  # 每天 UTC 4 点自动运行
   workflow_dispatch:      # 允许手动触发
-
-permissions:
-  contents: write
-  actions: read
 
 jobs:
   sync-fork:
@@ -42,30 +38,13 @@ jobs:
       - name: Backup workflow files
         run: |
           mkdir -p /tmp/backup
-          # 只备份同步工作流本身
-          if [ -f ".github/workflows/sync.yml" ]; then
-            cp .github/workflows/sync.yml /tmp/backup/
-            echo "Backed up sync workflow"
+          # 备份所有工作流文件
+          if [ -d ".github/workflows" ]; then
+            cp -r .github/workflows/* /tmp/backup/
+            echo "Backed up workflow files"
           else
-            echo "No sync workflow found to backup"
+            echo "No workflow files found to backup"
           fi
-
-      # 4.5️⃣ 删除所有可能导致问题的工作流文件
-      - name: Remove problematic workflow files
-        run: |
-          # 删除所有可能触发构建的工作流文件
-          rm -f .github/workflows/build.yml 2>/dev/null || true
-          rm -f .github/workflows/android.yml 2>/dev/null || true
-          rm -f .github/workflows/ci.yml 2>/dev/null || true
-          rm -f .github/workflows/release.yml 2>/dev/null || true
-          echo "Removed problematic workflow files"
-          
-          # 删除 Android 签名配置文件
-          rm -f android/key.properties 2>/dev/null || true
-          rm -f android/app/android_keystore.jks 2>/dev/null || true
-          # 删除可能引用这些文件的 Gradle 配置
-          sed -i '/android_keystore/d' android/app/build.gradle 2>/dev/null || true
-          echo "Removed Android config files"
 
       # 5️⃣ 添加上游仓库并获取所有内容
       - name: Add upstream and fetch
@@ -104,10 +83,10 @@ jobs:
                 git merge --no-commit upstream/$branch_name
                 
                 # 恢复工作流文件
-                if [ -f "/tmp/backup/sync.yml" ]; then
+                if [ -d "/tmp/backup" ]; then
                   mkdir -p .github/workflows
-                  cp /tmp/backup/sync.yml .github/workflows/
-                  git add .github/workflows/sync.yml
+                  cp -r /tmp/backup/* .github/workflows/
+                  git add .github/workflows/
                 fi
                 
                 # 提交合并
@@ -128,24 +107,15 @@ jobs:
             git push https://${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git $branch_name --force
           done
 
-      # 7️⃣ 同步所有标签（跳过包含工作流文件的标签）
-      - name: Sync tags selectively
+      # 7️⃣ 同步所有标签
+      - name: Sync tags
         run: |
           # 删除所有本地标签（避免冲突）
           git tag -l | xargs git tag -d 2>/dev/null || true
           # 获取上游所有标签
           git fetch upstream --tags --force
-          
-          # 获取所有标签
-          git tag -l | while read tag; do
-            # 检查标签是否包含工作流文件
-            if git ls-tree -r $tag | grep -q ".github/workflows/"; then
-              echo "Skipping tag $tag (contains workflow files)"
-            else
-              echo "Pushing tag $tag"
-              git push https://${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git $tag --force || echo "Failed to push tag $tag"
-            fi
-          done
+          # 推送所有标签到 origin
+          git push https://${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git --tags --force
 
       # 8️⃣ 获取上游发布列表和本地发布列表
       - name: Get release lists
@@ -153,18 +123,16 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 获取上游所有发布（按创建时间排序）
+          # 获取上游所有发布
           echo "Getting upstream releases..."
           upstream_releases=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-            "https://api.github.com/repos/233boy/Xray/releases?per_page=100" | \
-            jq -r 'sort_by(.created_at) | .[].tag_name')
+            "https://api.github.com/repos/233boy/Xray/releases?per_page=100" | jq -r '.[].tag_name')
           echo "Upstream releases: $upstream_releases"
           
-          # 获取本地所有发布（按创建时间排序）
+          # 获取本地所有发布
           echo "Getting local releases..."
           local_releases=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-            "https://api.github.com/repos/${{ github.repository }}/releases?per_page=100" | \
-            jq -r 'sort_by(.created_at) | .[].tag_name')
+            "https://api.github.com/repos/${{ github.repository }}/releases?per_page=100" | jq -r '.[].tag_name')
           echo "Local releases: $local_releases"
           
           # 找出需要同步的新发布
@@ -193,7 +161,7 @@ jobs:
           for tag_name in $new_releases; do
             echo "Processing new release: $tag_name"
             
-            # 获取发布详情 - 修复：使用正确的上游仓库URL
+            # 获取发布详情
             release_info=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
               "https://api.github.com/repos/233boy/Xray/releases/tags/$tag_name")
             
@@ -204,13 +172,12 @@ jobs:
             fi
             
             release_id=$(echo "$release_info" | jq -r '.id')
-            created_at=$(echo "$release_info" | jq -r '.created_at')
-            echo "Release ID: $release_id, Created at: $created_at"
+            echo "Release ID: $release_id"
             
             # 为每个标签创建子目录
             mkdir -p "releases/$tag_name"
             
-            # 保存发布信息到文件（包括创建时间）
+            # 保存发布信息到文件
             echo "$release_info" > "releases/$tag_name/release_info.json"
             
             # 下载每个资源
@@ -233,37 +200,16 @@ jobs:
             sleep 2
           done
 
-      # 🔟 按照上游创建时间顺序创建新的 GitHub Releases
-      - name: Create new GitHub Releases in order
+      # 🔟 只创建新的 GitHub Releases (修复文件上传问题)
+      - name: Create new GitHub Releases
         if: steps.get_releases.outputs.new_releases != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           new_releases="${{ steps.get_releases.outputs.new_releases }}"
           
-          # 首先，收集所有需要创建的发布的信息（标签名和创建时间）
-          declare -A release_dates
+          # 遍历所有新发布的资源
           for tag_name in $new_releases; do
-            tag_dir="releases/$tag_name"
-            release_info_file="$tag_dir/release_info.json"
-            if [ -f "$release_info_file" ]; then
-              created_at=$(jq -r '.created_at' "$release_info_file")
-              # 将日期转换为时间戳以便排序
-              timestamp=$(date -d "$created_at" +%s)
-              release_dates[$tag_name]=$timestamp
-            else
-              # 如果没有找到发布信息文件，使用当前时间戳
-              release_dates[$tag_name]=$(date +%s)
-            fi
-          done
-
-          # 按照时间戳排序标签名
-          # 由于 Bash 关联数组不能直接排序，我们将标签名和时间戳放入数组然后排序
-          # 创建一个数组，元素格式为：时间戳:标签名
-          for tag_name in "${!release_dates[@]}"; do
-            printf "%d:%s\n" "${release_dates[$tag_name]}" "$tag_name"
-          done | sort -n | while IFS=: read -r timestamp tag_name; do
-            # 现在按照排序后的顺序处理每个标签
             tag_dir="releases/$tag_name"
             
             if [ -d "$tag_dir" ]; then
@@ -276,7 +222,6 @@ jobs:
                 release_notes=$(jq -r '.body' "$release_info_file")
                 prerelease=$(jq -r '.prerelease' "$release_info_file")
                 draft=$(jq -r '.draft' "$release_info_file")
-                created_at=$(jq -r '.created_at' "$release_info_file")
                 
                 # 设置发布参数
                 prerelease_flag=""
