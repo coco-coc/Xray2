@@ -51,7 +51,7 @@
 
 执行如下命令：
 ```
-bash <(wget -qO- -o- https://github.com/233boy/Xray/raw/main/install.sh)
+bash <(wget -qO- -o- https://github.com/coco-coc/Xray/raw/main/install.sh)
 ```
 
 # 帮助
